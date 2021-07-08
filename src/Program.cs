@@ -23,7 +23,21 @@ namespace ApiServerSdkAccess
             IKubernetes client = new Kubernetes(config);
             Console.WriteLine("Starting Request!");
 
-            //var list = client.ListNamespacedPersistentVolumeClaim("default");
+            var list = client.ListNamespacedStatefulSet("default");
+
+            // 创建pod和service
+            //var result = await CreateStatefulSetWithVolumeTemplate(
+            //    client,
+            //    "sdk-create-test",
+            //    "sdk-create-test-container",
+            //    "bounding-sc").ConfigureAwait(false);
+
+            //var service = await CreateService(
+            //    client,
+            //    "sdk-create-test",
+            //    30010,
+            //    list.Items.First(s => s.Metadata.Name == "sdk-create-test").Metadata.Labels).ConfigureAwait(false);
+
             //var podsMetrics = await client.GetKubernetesPodsMetricsByNamespaceAsync("default").ConfigureAwait(false);
 
             //var evt = client.ReadNamespacedStatefulSetStatus("iotcenter-sqlite-v2", "default");
@@ -37,13 +51,11 @@ namespace ApiServerSdkAccess
 
             try
             {
-                for (int i = 0; i < 100; i++)
-                {
-                    await CopyFileToPodAsync(
-                        client,
-                        Path.Combine(Environment.CurrentDirectory, "out.txt"),
-                        $"/opt/ganwei/out{i}.txt").ConfigureAwait(false);
-                }
+
+                await CopyFileToPodAsync(
+                    client,
+                    Path.Combine(Environment.CurrentDirectory, "out.txt"),
+                    $"/opt/ganwei/out.txt").ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -185,7 +197,10 @@ namespace ApiServerSdkAccess
             var pod = list.Items[1];
 
             //using var webSocket =
-            //   await client.WebSocketNamespacedPodExecAsync(pod.Metadata.Name, "default", new string[] { "curl", "http://metadata.tencentyun.com/latest/meta-data/public-ipv4" },
+            //   await client.WebSocketNamespacedPodExecAsync(
+            //       pod.Metadata.Name,
+            //       "default",
+            //       new string[] { "/bin/sh", "-c", "ls -R | grep \"^d\" | awk '{print i$0}' i=`pwd`'/'" },
             //       pod.Spec.Containers[0].Name).ConfigureAwait(false);
 
             //using var demux = new StreamDemuxer(webSocket);
@@ -193,31 +208,21 @@ namespace ApiServerSdkAccess
 
             //using StreamReader stdout = new StreamReader(demux.GetStream(1, 1), Encoding.UTF8);
 
-            //string command;
-            //do
+            //string line;
+            //while ((line = await stdout.ReadLineAsync()) != null)
             //{
-            //    command = Console.ReadLine();
-            //    byte[] buff = Encoding.UTF8.GetBytes(command);
-            //    await demux.Write(ChannelIndex.StdIn, buff, 0, buff.Length);
-
-            //    // Read from STDOUT until process terminates.
-            //    string line;
-            //    while ((line = await stdout.ReadLineAsync()) != null)
-            //    {
-            //        Console.WriteLine(line);
-            //    }
+            //    Console.WriteLine(line);
             //}
-            //while (command != "exit");
 
             while (true)
             {
-                var comArr = Console.ReadLine().Split(' ');
+                var comArr = Console.ReadLine();
 
                 using var webSocket =
                    await client.WebSocketNamespacedPodExecAsync(
                        pod.Metadata.Name,
                        "default",
-                       comArr,
+                       new string[] { "bash", "-c", comArr },
                        pod.Spec.Containers[0].Name).ConfigureAwait(false);
 
                 using var demux = new StreamDemuxer(webSocket);
@@ -289,7 +294,7 @@ namespace ApiServerSdkAccess
                 }
             });
 
-            var folderName = GetLinuxFolderName(sourceFilePath);
+            var folderName = GetLinuxFormatFolderName(sourceFilePath);
 
             var sourceFileInfo = new FileInfo(sourceFilePath);
 
@@ -384,7 +389,7 @@ namespace ApiServerSdkAccess
                 //}
             });
 
-            var destinationFolder = GetLinuxFolderName(destinationFilePath);
+            var destinationFolder = GetLinuxFormatFolderName(destinationFilePath);
 
             using (var muxedStream = await client.MuxedStreamNamespacedPodExecAsync(
                     name,
@@ -404,7 +409,7 @@ namespace ApiServerSdkAccess
             }
         }
 
-        private static string GetLinuxFolderName(string destinationFilePath)
+        private static string GetLinuxFormatFolderName(string destinationFilePath)
         {
             var folderName = Path.GetDirectoryName(destinationFilePath);
 
@@ -416,5 +421,180 @@ namespace ApiServerSdkAccess
         }
 
         #endregion
+
+        private static async Task<V1StatefulSet> CreateStatefulSetWithVolumeTemplate(
+            IKubernetes client,
+            string statefulNm,
+            string containerNm,
+            string storageClassNm,
+            IDictionary<string, ResourceQuantity> Limits = null,
+            IDictionary<string, ResourceQuantity> Requests = null,
+            string imageNm = "ccr.ccs.tencentyun.com/tke-iotcenter/iotcenter:3.1.13.10",
+            string nameSpace = "default")
+        {
+            var stateful = new V1StatefulSet();
+            stateful.Metadata = new V1ObjectMeta();
+            stateful.Metadata.Name = statefulNm;
+            stateful.Metadata.NamespaceProperty = nameSpace;
+            stateful.Metadata.CreationTimestamp = DateTime.UtcNow;
+
+            stateful.Metadata.ManagedFields = new V1ManagedFieldsEntry[]
+            {
+                new V1ManagedFieldsEntry
+                {
+                    ApiVersion = "v1",
+                    Manager = "kube-controller-manager",
+                    Operation = "Update",
+                    Time = DateTime.UtcNow
+                },
+                new V1ManagedFieldsEntry
+                {
+                    ApiVersion = "v1",
+                    Manager = "tke-apiserver",
+                    Operation = "Update",
+                    Time = DateTime.UtcNow
+                }
+            };
+
+            var lables = new Dictionary<string, string>() { { "k8s-app", statefulNm }, { "qcloud-app", statefulNm } };
+            stateful.Metadata.Labels = lables;
+
+            stateful.Spec = new V1StatefulSetSpec();
+            stateful.Spec.PodManagementPolicy = "OrderedReady";
+            stateful.Spec.Replicas = 1;
+            stateful.Spec.RevisionHistoryLimit = 10;
+            stateful.Spec.Selector = new V1LabelSelector() { MatchLabels = lables };
+            stateful.Spec.ServiceName = string.Empty;
+
+            stateful.Spec.Template = new V1PodTemplateSpec();
+            stateful.Spec.Template.Metadata = new V1ObjectMeta() { CreationTimestamp = null, Labels = lables };
+            stateful.Spec.Template.Spec = new V1PodSpec();
+
+            //stateful.Spec.VolumeClaimTemplates = new V1PersistentVolumeClaim[] {
+            //    new V1PersistentVolumeClaim() {
+            //        Metadata = new V1ObjectMeta() {
+            //            Name = statefulNm
+            //        },
+            //        Spec = new V1PersistentVolumeClaimSpec(){
+            //            AccessModes = new string[]{ "ReadWriteOnce" },
+            //            StorageClassName = storageClassNm,
+            //            Resources = new V1ResourceRequirements(){
+            //                Requests = new Dictionary<string, ResourceQuantity> {
+            //                    { "storage", new ResourceQuantity("10Gi") }
+            //                }
+            //            }
+            //        }
+            //    }
+            //};
+
+            stateful.Spec.Template.Spec.Containers = new V1Container[] {
+                new V1Container() {
+                    Env = new V1EnvVar[] {
+                        new V1EnvVar() {
+                            Name = "PATH",
+                            Value = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                        },
+                        new V1EnvVar() {
+                            Name = "DOTNET_RUNNING_IN_CONTAINER",
+                            Value = "true"
+                        },
+                        new V1EnvVar() {
+                            Name = "DOTNET_ROOT",
+                            Value = "/usr/share/dotnet"
+                        }
+                    },
+                    Image = imageNm,
+                    ImagePullPolicy = "IfNotPresent",
+                    Name = containerNm,
+                    Ports = new V1ContainerPort[] {
+                        new V1ContainerPort(44380)
+                    },
+                    Resources = new V1ResourceRequirements(){
+                        Limits = Limits?? new Dictionary<string, ResourceQuantity>() {
+                                { "cpu", new ResourceQuantity("4") },
+                                { "memory", new ResourceQuantity("8Gi")
+                            }
+                        },
+                        Requests = Requests?? new Dictionary<string, ResourceQuantity>() {
+                                { "cpu", new ResourceQuantity("2") },
+                                { "memory", new ResourceQuantity("4Gi")
+                            }
+                        }
+                    },
+                    SecurityContext = new V1SecurityContext(privileged: false),
+                    TerminationMessagePath = "/dev/termination-log",
+                    TerminationMessagePolicy = "File"
+                }
+            };
+
+            stateful.Spec.Template.Spec.DnsPolicy = "ClusterFirst";
+            stateful.Spec.Template.Spec.ImagePullSecrets = new V1LocalObjectReference[] {
+                new V1LocalObjectReference("qcloudregistrykey")
+            };
+
+            stateful.Spec.Template.Spec.RestartPolicy = "Always";
+            stateful.Spec.Template.Spec.SchedulerName = "default-scheduler";
+            stateful.Spec.Template.Spec.SecurityContext = new V1PodSecurityContext();
+            stateful.Spec.Template.Spec.TerminationGracePeriodSeconds = 30;
+
+            stateful.Spec.UpdateStrategy = new V1StatefulSetUpdateStrategy()
+            {
+                RollingUpdate = new V1RollingUpdateStatefulSetStrategy(0),
+                Type = "RollingUpdate"
+            };
+
+            return await client.CreateNamespacedStatefulSetAsync(
+                stateful,
+                nameSpace
+                ).ConfigureAwait(false);
+        }
+
+        private static async Task<V1Service> CreateService(
+            IKubernetes client,
+            string srvName,
+            int nodePort,
+            IDictionary<string, string> selector,
+            string nameSpace = "default")
+        {
+            var service = new V1Service();
+            service.Metadata = new V1ObjectMeta();
+            service.Metadata.Name = srvName;
+            service.Metadata.NamespaceProperty = nameSpace;
+            service.Metadata.CreationTimestamp = DateTime.UtcNow;
+            service.Metadata.Labels = selector;
+            service.Metadata.ManagedFields = new V1ManagedFieldsEntry[]
+            {
+                new V1ManagedFieldsEntry
+                {
+                    ApiVersion = "v1",
+                    Manager = "tke-apiserver",
+                    Operation = "Update",
+                    Time = DateTime.UtcNow
+                }
+            };
+
+            service.Spec = new V1ServiceSpec();
+            service.Spec.ExternalTrafficPolicy = "Cluster";
+            service.Spec.Ports = new V1ServicePort[]
+            {
+                new V1ServicePort
+                {
+                    Protocol = "TCP",
+                    TargetPort = 44380,
+                    Port = 44380,
+                    NodePort = nodePort,
+                    Name = $"44380-44380-{nodePort}-tcp"
+                }
+            };
+
+            service.Spec.Selector = selector;
+            service.Spec.SessionAffinity = "None";
+            service.Spec.Type = "NodePort";
+
+            return await client.CreateNamespacedServiceAsync(
+                service,
+                nameSpace
+                ).ConfigureAwait(false);
+        }
     }
 }
