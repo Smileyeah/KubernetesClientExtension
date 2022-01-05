@@ -8,6 +8,9 @@
   <ItemGroup>
     <None Remove="config\cls-8ok9q7cu-config" />
     <None Remove="config\cls-8ok9q7cu-config - Copy" />
+    <None Update="QueryDbSize.sh">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>

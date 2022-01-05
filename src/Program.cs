@@ -12,6 +12,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
 namespace ApiServerSdkAccess
 {
     class Program
@@ -23,7 +26,8 @@ namespace ApiServerSdkAccess
             IKubernetes client = new Kubernetes(config);
             Console.WriteLine("Starting Request!");
 
-            var list = client.ListNamespacedStatefulSet("default");
+            var stdout = RunCommandOnLinux("./QueryDbSize.sh", "172.17.0.2 root 123456 iotcenter");
+            //var list = client.ListNamespacedStatefulSet("default");
 
             // 创建pod和service
             //var result = await CreateStatefulSetWithVolumeTemplate(
@@ -595,6 +599,57 @@ namespace ApiServerSdkAccess
                 service,
                 nameSpace
                 ).ConfigureAwait(false);
+        }
+        
+        private static string RunCommandOnLinux(string fileNm, string arguments)
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                throw new PlatformNotSupportedException($"The current operating system is not supported on {nameof(OSPlatform.Linux)}.");
+            }
+
+            Console.WriteLine($"RunCommandOnLinux start, fileName={fileNm}, arguments={string.Join(',', arguments)}");
+
+            var psi = new ProcessStartInfo(fileNm, arguments) { RedirectStandardOutput = true };
+            var proc = Process.Start(psi);
+            if (proc != null)
+            {
+                StringBuilder sb = new StringBuilder();
+
+                try
+                {
+                    using var sr = proc.StandardOutput;
+                    while (!sr.EndOfStream)
+                    {
+                        string str = sr.ReadLine();
+                        sb.AppendLine(str);
+                    }
+                }
+                catch { }
+
+                proc.WaitForExit();
+                if (!proc.HasExited)
+                {
+                    proc.Kill();
+                }
+
+                if (proc.ExitCode != 0)
+                    Console.WriteLine($"{fileNm} script running failed!");
+                else
+                    Console.WriteLine($"{fileNm} script running success.");
+
+                var result = sb.Replace("M", string.Empty)
+                    .Replace(Environment.NewLine, string.Empty)
+                    .ToString();
+
+                Console.WriteLine($"RunCommandOnLinux end, result: {result}");
+
+                return result;
+            }
+            else
+            {
+                throw new PlatformNotSupportedException($"The current operating system is not running command process.");
+            }
         }
     }
 }
